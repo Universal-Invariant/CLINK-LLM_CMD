@@ -1,20 +1,20 @@
 # CLINK-LLM_CMD
 
-A tiny Clink plugin and bridge for AI-style inline prompts in `cmd.exe`.
+A small Clink plugin and helper for AI-style inline prompts in `cmd.exe`.
 
-The shell-side hook intercepts lines beginning with a configurable prefix (default: `>`), calls a helper process, and prevents cmd.exe from executing the raw line. The helper builds context (cwd, recent history, maybe file refs), calls an OpenAI-compatible API (such as LM Studio), and prints the result.
+The shell-side hook intercepts lines beginning with a configurable prefix (default: `>`), gathers a bit of contextual data, and prevents `cmd.exe` from executing the raw line. The helper builds a richer prompt (cwd + recent command history + any `!file.txt!` references + the textual request), then calls an OpenAI-compatible endpoint such as LM Studio.
 
 Files in this repo:
 
 - `clink_ai.lua` — Clink Lua plugin
-- `ai_bridge.py` — helper that calls the LLM API
-- `clink_start.cmd` — example startup script for suppressing the default CMD banner and optionally running a custom prompt
+- `ai_bridge.py` — helper that calls the LLM API and can also be invoked directly from other shells
+- `clink_start.cmd` — example startup script
 
 ## Quick usage
 
 1. Put `clink_ai.lua` in a Clink scripts directory
 2. Put `ai_bridge.py` somewhere convenient
-3. Edit environment variables or defaults in the scripts
+3. Set the environment variables for your backend
 4. Start `cmd.exe` with Clink enabled
 5. Type commands like:
 
@@ -22,6 +22,7 @@ Files in this repo:
 > summarize the current folder
 > explain build errors
 > what did I run last?
+> summarize !README.md!
 ```
 
 ## Configuration
@@ -35,7 +36,7 @@ set CLINK_AI_PREFIX=>
 set CLINK_AI_BRIDGE=C:\path\to\ai_bridge.py
 ```
 
-The bridge uses env vars:
+The bridge uses these env vars:
 
 - `CLINK_AI_URL` — OpenAI-compatible chat completions URL
 - `CLINK_AI_MODEL` — model name
@@ -52,23 +53,16 @@ set CLINK_AI_MODEL=local-model
 set CLINK_AI_API_KEY=lm-studio
 ```
 
-## Notes about the CMD banner / copyright message
+## Features
 
-The default Microsoft `cmd.exe` banner is a Clink setting, not a Windows requirement. Best practice is to hide it via Clink itself:
+This example includes the first practical next-step features:
 
-```cmd
-clink set clink.logo none
-```
+- `!file.txt!` references are detected and included in the request context
+- recent command history is included when available from Clink's history file
+- prompt construction is more structured and reusable
+- the backend is directly callable from scripts, PowerShell, or bash wrappers
 
-or:
-
-```cmd
-clink set clink.logo short
-```
-
-Do not rely on `cls` in autorun if you also use a custom prompt such as Oh My Posh. `cls` clears the screen and can interfere with prompt setup/rendering. In other words, `cls` is a blunt tool; it often runs too early and destroys the formatting state that the prompt expects.
-
-If you want to clear the screen, do it after the prompt is initialized, typically as the last line in a `clink_start.cmd` script or after `oh-my-posh` initialization. If you want the cleanest setup, prefer `clink set clink.logo none` and leave the prompt to render normally.
+The idea is to keep the shell hook thin and the model logic reusable.
 
 ## Minimal example: local LM Studio
 
@@ -81,8 +75,24 @@ set CLINK_AI_API_KEY=lm-studio
 Then type:
 
 ```cmd
-> explain the current directory and give me a quick summary
+> explain the current directory and summarize !README.md!
 ```
+
+## Backend reuse across shells
+
+The backend is intentionally separate from the Clink hook. The same helper can be used from other wrappers.
+
+Examples:
+
+```cmd
+python ai_bridge.py --prompt "summarize this folder" --cwd "%CD%" --files "README.md" --history "dir" 
+```
+
+```bash
+python ai_bridge.py --prompt "summarize this folder" --cwd "$PWD" --files README.md --history "pwd\nls"
+```
+
+A PowerShell wrapper would call the same script with similar arguments. The shell-specific piece is just the front-end trigger; the actual model call stays in one reusable place.
 
 ## Why this is useful
 
