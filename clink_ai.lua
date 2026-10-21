@@ -3,7 +3,24 @@
 -- and passed to a helper script for context gathering and LLM processing.
 
 local prefix = os.getenv("CLINK_AI_PREFIX") or ">"
-local bridge = os.getenv("CLINK_AI_BRIDGE") or "C:\\tools\\clink-llm\\ai_bridge.py"
+
+local function default_bridge_path()
+    local info = debug.getinfo(1, "S")
+    local source = info and info.source or ""
+    if source and source:sub(1, 1) == "@" then
+        source = source:sub(2)
+    end
+
+    local dir = source:match("^(.*)\\[^\\]+$") or source:match("^(.*)/[^/]+$") or "."
+    local candidate = dir .. "\\ai_bridge.py"
+    if os.rename(candidate, candidate) then
+        return candidate
+    end
+
+    return "C:\\tools\\clink-llm\\ai_bridge.py"
+end
+
+local bridge = os.getenv("CLINK_AI_BRIDGE") or default_bridge_path()
 
 local function trim(s)
     if s == nil then return "" end
