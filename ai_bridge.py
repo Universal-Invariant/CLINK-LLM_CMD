@@ -4,10 +4,104 @@
 import argparse
 import json
 import os
+import re
 import sys
-from urllib import request, error
+from urllib import error, request
 
 DEFAULT_TIMEOUT = int(os.getenv("CLINK_AI_TIMEOUT", "60"))
+
+
+def clean_url(base):
+    if not base:
+        return ""
+    base = base.strip()
+    if not base:
+        return ""
+    while base.endswith("/") and len(base) > 1:
+        base = base[:-1]
+    return base
+
+
+def join_url(base, path):
+    base = clean_url(base)
+    path = str(path or "").strip().strip("/")
+    if not path:
+        return base
+    if not base:
+        return path
+    return base + "/" + path
+
+
+def is_full_endpoint(value):
+    if not value:
+        return False
+    value = clean_url(value)
+    return bool(re.search(r"/(?:v1|api)/", value)) or value.endswith("/chat/completions") or value.endswith("/api/chat")
+
+
+def resolve_api_url(explicit_url=None):
+    if explicit_url:
+        explicit = clean_url(explicit_url)
+        if explicit:
+            return explicit
+
+    candidates = [
+        os.getenv("CLINK_AI_URL"),
+        os.getenv("CLINK_AI_BASE_URL"),
+        os.getenv("LMSTUDIO_API_BASE"),
+        os.getenv("OPENAI_BASE_URL"),
+        os.getenv("OLLAMA_HOST"),
+    ]
+
+    for candidate in candidates:
+        if candidate and str(candidate).strip():
+            value = clean_url(str(candidate).strip())
+            if is_full_endpoint(value):
+                return value
+            # If it explicitly looks like an API root, append a sensible path.
+            if value.lower().endswith("/v1"):
+                return join_url(value, "chat/completions")
+            if value.lower().endswith("/api"):
+                return join_url(value, "chat")
+            # For providers with no explicit path, choose a reasonable default.
+            if "ollama" in value.lower() or "ollama" in os.getenv("OLLAMA_HOST", "").lower():
+                return join_url(value, "api/chat")
+            if "lmstudio" in value.lower() or "localhost:1234" in value.lower() or "localhost:12349" in value.lower():
+                return join_url(value, "v1/chat/completions")
+            return join_url(value, "v1/chat/completions")
+
+    return "http://localhost:12349/v1/chat/completions"
+
+
+def resolve_model(explicit_model=None):
+    if explicit_model:
+        return explicit_model.strip()
+
+    for name in [
+        "CLINK_AI_MODEL",
+        "OPENAI_MODEL",
+        "LLM_MODEL",
+    ]:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+
+    return "local-model"
+
+
+def resolve_api_key(explicit_key=None):
+    if explicit_key:
+        return explicit_key.strip()
+
+    for name in [
+        "CLINK_AI_API_KEY",
+        "OPENAI_API_KEY",
+    ]:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+
+    return "lm-studio"
 
 
 def load_json(path):
@@ -82,10 +176,10 @@ def build_prompt_from_args(args):
     )
 
 
-def call_openai_compatible(prompt):
-    url = os.getenv("CLINK_AI_URL") or "http://localhost:1234/v1/chat/completions"
-    model = os.getenv("CLINK_AI_MODEL") or "local-model"
-    api_key = os.getenv("CLINK_AI_API_KEY") or "lm-studio"
+def call_openai_compatible(prompt, api_url=None, model=None, api_key=None):
+    url = resolve_api_url(api_url)
+    model = resolve_model(model)
+    api_key = resolve_api_key(api_key)
 
     payload = {
         "model": model,
@@ -115,7 +209,11 @@ def call_openai_compatible(prompt):
     try:
         with request.urlopen(req, timeout=DEFAULT_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"]
+            if "choices" in data and data["choices"]:
+                return data["choices"][0]["message"]["content"]
+            if "message" in data:
+                return data["message"].get("content", "")
+            return json.dumps(data, indent=2)
     except error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         return f"AI request failed (HTTP {e.code}): {body}"
@@ -130,6 +228,9 @@ def main():
     parser.add_argument("--cwd", help="working directory")
     parser.add_argument("--history", help="recent command history")
     parser.add_argument("--files", nargs="*", help="file names or paths to include")
+    parser.add_argument("--api-url", help="override the provider base or full endpoint URL")
+    parser.add_argument("--model", help="override the model name")
+    parser.add_argument("--api-key", help="override the API key")
     args = parser.parse_args()
 
     if args.job:
@@ -142,7 +243,12 @@ def main():
     else:
         prompt = build_prompt_from_args(args)
 
-    result = call_openai_compatible(prompt)
+    result = call_openai_compatible(
+        prompt,
+        api_url=args.api_url,
+        model=args.model,
+        api_key=args.api_key,
+    )
 
     print("")
     print("AI response:")
