@@ -104,6 +104,21 @@ This is intentionally thin: the shell plugin is only responsible for interceptio
 - command-history summarizers
 - future PowerShell or Bash front-ends
 
+## Future enhancements
+
+Planned follow-up improvements for this project:
+
+- Add true asynchronous job processing so the shell remains responsive while the model runs.
+- Add a more structured parser for commands like `> summarize !README.md!` and `> explain build errors`.
+- Include richer context such as current git status, recent directory listing, environment summary, and selected file metadata.
+- Add a status indicator or prompt update so users can tell when a model request is queued, running, or complete.
+- Add a PowerShell wrapper and bash/zsh wrapper that call the same backend contract as Clink.
+- Add input validation and safer file-path handling for local file context injection.
+- Add support for configurable LLM backends beyond OpenAI-compatible endpoints.
+- Add result caching and a lightweight request log for repeat prompts.
+- Add a non-blocking queue directory and worker model for cleaner asynchronous output.
+- Add a simple plugin configuration file for default prefix, model, and backend settings.
+
 ## License
 
 MIT
