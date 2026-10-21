@@ -9,6 +9,11 @@ Files in this repo:
 - `clink_ai.lua` — Clink Lua plugin
 - `ai_bridge.py` — reusable helper that calls an LLM backend and can also be invoked directly from PowerShell, bash, or other scripts
 
+
+## Install
+The Clink install step using "clink installscripts <script_path>".
+The default same-directory detection for `ai_bridge.py` or override env var if the file is stored elsewhere.
+
 ## Quick usage
 
 1. Put `clink_ai.lua` in a Clink scripts directory.
