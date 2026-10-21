@@ -1,9 +1,6 @@
 -- clink_ai.lua
--- Minimal Clink hook: lines beginning with ">" are intercepted and
--- handed to a Python bridge for LLM processing.
---
--- This makes the shell itself stay simple. The actual AI logic lives in
--- a helper script so it can be reused from other shells later.
+-- Thin Clink hook: lines beginning with the configured prefix are intercepted
+-- and passed to a helper script for context gathering and LLM processing.
 
 local prefix = os.getenv("CLINK_AI_PREFIX") or ">"
 local bridge = os.getenv("CLINK_AI_BRIDGE") or "C:\\tools\\clink-llm\\ai_bridge.py"
@@ -15,10 +12,25 @@ local function trim(s)
     return s
 end
 
-local function escape_for_cmd(s)
-    -- Very rough escaping for Windows command line.
-    -- Good enough for a personal helper script.
-    return (s:gsub('"', '\\"'))
+local function json_escape(s)
+    if s == nil then return "" end
+    s = s:gsub("\\", "\\\\")
+    s = s:gsub("\"", "\\\"")
+    s = s:gsub("\n", "\\n")
+    s = s:gsub("\r", "\\r")
+    s = s:gsub("\t", "\\t")
+    return s
+end
+
+local function write_json_array(f, arr)
+    f:write("[")
+    for i, v in ipairs(arr) do
+        if i > 1 then
+            f:write(",")
+        end
+        f:write("\"" .. json_escape(v) .. "\"")
+    end
+    f:write("]")
 end
 
 local function ensure_dir(path)
@@ -26,7 +38,48 @@ local function ensure_dir(path)
     return ok
 end
 
-local function save_job(prompt)
+local function get_history_text()
+    local candidates = {
+        os.getenv("CLINK_HISTORY_FILE"),
+        os.getenv("CLINK_PROFILE") and (os.getenv("CLINK_PROFILE") .. "\\clink_history"),
+        os.getenv("LOCALAPPDATA") and (os.getenv("LOCALAPPDATA") .. "\\clink\\clink_history"),
+        os.getenv("USERPROFILE") and (os.getenv("USERPROFILE") .. "\\AppData\\Local\\clink\\clink_history"),
+    }
+
+    for _, p in ipairs(candidates) do
+        if p and p ~= "" then
+            local f = io.open(p, "r")
+            if f then
+                local lines = {}
+                for line in f:lines() do
+                    table.insert(lines, line)
+                end
+                f:close()
+
+                local start_index = math.max(1, #lines - 25)
+                local selected = {}
+                for i = start_index, #lines do
+                    table.insert(selected, lines[i])
+                end
+                if #selected > 0 then
+                    return table.concat(selected, "\n")
+                end
+            end
+        end
+    end
+
+    return ""
+end
+
+local function extract_file_refs(text)
+    local refs = {}
+    for file in text:gmatch("!(.-)!") do
+        table.insert(refs, file)
+    end
+    return refs
+end
+
+local function save_job(prompt, files, history)
     local appdata = os.getenv("LOCALAPPDATA") or os.getenv("USERPROFILE") or "."
     local dir = appdata .. "\\clink-llm"
     ensure_dir(dir)
@@ -34,38 +87,33 @@ local function save_job(prompt)
     ensure_dir(jobs)
 
     local timestamp = os.date("%Y%m%d-%H%M%S")
-    local file = jobs .. "\\job-" .. timestamp .. ".json"
+    local path = jobs .. "\\job-" .. timestamp .. ".json"
 
-    -- Build a tiny JSON payload.
-    -- We do not try to be perfect here; the Python bridge can be extended.
-    local cwd = os.getenv("CD") or os.getenv("PWD") or "."
-    local history = ""
-    local f = io.open(file, "w")
+    local f = io.open(path, "w")
     if f then
-        f:write('{')
-        f:write(string.format('"prompt":"%s",', escape_for_cmd(prompt)))
-        f:write(string.format('"cwd":"%s",', escape_for_cmd(cwd)))
-        f:write(string.format('"prefix":"%s",', escape_for_cmd(prefix)))
-        f:write(string.format('"history":"%s"', escape_for_cmd(history)))
-        f:write('}')
+        f:write("{\n")
+        f:write("  \"prompt\": \"" .. json_escape(prompt) .. "\",\n")
+        f:write("  \"cwd\": \"" .. json_escape(os.getenv("CD") or os.getenv("PWD") or ".") .. "\",\n")
+        f:write("  \"history\": \"" .. json_escape(history or "") .. "\",\n")
+        f:write("  \"files\": ")
+        write_json_array(f, files or {})
+        f:write(",\n")
+        f:write("  \"prefix\": \"" .. json_escape(prefix) .. "\"\n")
+        f:write("}\n")
         f:close()
     end
 
-    return file
+    return path
 end
 
-local function queue_ai_request(prompt)
-    local jobfile = save_job(prompt)
-
+local function queue_ai_request(prompt, files, history)
+    local jobfile = save_job(prompt, files, history)
     local command = string.format(
         'start "" /b cmd /c python "%s" --job "%s"',
         bridge,
         jobfile
     )
-
-    -- We intentionally do not block here.
     os.execute(command)
-
     print("[AI] queued")
     return ""
 end
@@ -101,11 +149,13 @@ local function on_filter_input(line)
         print("  " .. prefix .. " summarize this folder")
         print("  " .. prefix .. " explain build errors")
         print("  " .. prefix .. " what did I run last?")
-        print("  " .. prefix .. " read !somefile.txt!")
+        print("  " .. prefix .. " summarize !README.md!")
         return ""
     end
 
-    return queue_ai_request(prompt)
+    local files = extract_file_refs(prompt)
+    local history = get_history_text()
+    return queue_ai_request(prompt, files, history)
 end
 
 clink.onfilterinput(on_filter_input)
