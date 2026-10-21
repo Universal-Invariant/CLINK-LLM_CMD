@@ -193,20 +193,6 @@ def build_user_message(job):
     )
 
 
-def build_messages_from_job(job):
-    session_path = job.get("session_file") or default_session_path()
-    session = trim_session_messages(load_session_state(session_path))
-
-    user_content = build_user_message(job)
-    if session:
-        messages = [{"role": "user", "content": "Continue this terminal session using prior context."}]
-        messages.extend(session)
-        messages.append({"role": "user", "content": user_content})
-        return messages
-
-    return [{"role": "user", "content": user_content}]
-
-
 def build_prompt_from_args(args):
     files = []
     for item in (args.files or []):
@@ -230,14 +216,14 @@ def build_prompt_from_args(args):
     )
 
 
-def call_provider(prompt, api_url=None, model=None, api_key=None, session_file=None, prior_messages=None):
+def call_provider(prompt, api_url=None, model=None, api_key=None, prior_messages=None):
     url = resolve_api_url(api_url)
     model_name = resolve_model(model)
     key_value = resolve_api_key(api_key)
 
     messages = [{
         "role": "system",
-        "content": "You are a helpful terminal assistant for the Windows command line. Use prior conversation context when present. Keep replies brief and commands actionable."
+        "content": "You are a helpful terminal assistant for the Windows command line. Use prior conversation context when present. Keep replies brief, actionable, and shell-aware."
     }]
 
     if prior_messages:
@@ -315,7 +301,6 @@ def main():
         api_url=args.api_url,
         model=args.model,
         api_key=args.api_key,
-        session_file=session_file,
         prior_messages=prior_messages,
     )
 
