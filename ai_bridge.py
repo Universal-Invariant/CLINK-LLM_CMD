@@ -45,33 +45,31 @@ def resolve_api_url(explicit_url=None):
         if explicit:
             return explicit
 
-    candidates = [
-        os.getenv("CLINK_AI_URL"),
-        os.getenv("CLINK_AI_BASE_URL"),
-        os.getenv("LMSTUDIO_API_BASE"),
-        os.getenv("OPENAI_BASE_URL"),
-        os.getenv("OLLAMA_HOST"),
+    candidate_sources = [
+        ("CLINK_AI_URL", os.getenv("CLINK_AI_URL")),
+        ("CLINK_AI_BASE_URL", os.getenv("CLINK_AI_BASE_URL")),
+        ("LMSTUDIO_API_BASE", os.getenv("LMSTUDIO_API_BASE")),
+        ("OPENAI_BASE_URL", os.getenv("OPENAI_BASE_URL")),
+        ("OLLAMA_HOST", os.getenv("OLLAMA_HOST")),
     ]
 
-    for candidate in candidates:
-        if candidate and str(candidate).strip():
-            value = clean_url(str(candidate).strip())
-            if is_full_endpoint(value):
-                return value
-            # If it explicitly looks like an API root, append a sensible path.
-            if value.lower().endswith("/v1"):
-                return join_url(value, "chat/completions")
-            if value.lower().endswith("/api"):
-                return join_url(value, "chat")
-            # For providers with no explicit path, choose a reasonable default.
-            if "ollama" in value.lower() or "ollama" in os.getenv("OLLAMA_HOST", "").lower():
-                return join_url(value, "api/chat")
-            if "lmstudio" in value.lower() or "localhost:1234" in value.lower() or "localhost:12349" in value.lower():
-                return join_url(value, "v1/chat/completions")
-            return join_url(value, "v1/chat/completions")
+    for source_name, value in candidate_sources:
+        if not value or not str(value).strip():
+            continue
+
+        v = clean_url(str(value).strip())
+
+        if source_name == "OLLAMA_HOST":
+            if is_full_endpoint(v):
+                return v
+            return join_url(v, "api/chat")
+
+        if source_name in ("CLINK_AI_URL", "LMSTUDIO_API_BASE", "OPENAI_BASE_URL", "CLINK_AI_BASE_URL"):
+            if is_full_endpoint(v):
+                return v
+            return join_url(v, "v1/chat/completions")
 
     return "http://localhost:12349/v1/chat/completions"
-
 
 def resolve_model(explicit_model=None):
     if explicit_model:
@@ -176,7 +174,7 @@ def build_prompt_from_args(args):
     )
 
 
-def call_openai_compatible(prompt, api_url=None, model=None, api_key=None):
+def call_provider_chat(prompt, api_url=None, model=None, api_key=None):
     url = resolve_api_url(api_url)
     model = resolve_model(model)
     api_key = resolve_api_key(api_key)
@@ -243,7 +241,7 @@ def main():
     else:
         prompt = build_prompt_from_args(args)
 
-    result = call_openai_compatible(
+    result = call_provider_chat(
         prompt,
         api_url=args.api_url,
         model=args.model,
