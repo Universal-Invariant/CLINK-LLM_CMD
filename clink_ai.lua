@@ -15,7 +15,7 @@ end
 local function json_escape(s)
     if s == nil then return "" end
     s = s:gsub("\\", "\\\\")
-    s = s:gsub("\"", "\\\"")
+    s = s:gsub('"', '\\"')
     s = s:gsub("\n", "\\n")
     s = s:gsub("\r", "\\r")
     s = s:gsub("\t", "\\t")
@@ -28,7 +28,7 @@ local function write_json_array(f, arr)
         if i > 1 then
             f:write(",")
         end
-        f:write("\"" .. json_escape(v) .. "\"")
+        f:write('"' .. json_escape(v) .. '"')
     end
     f:write("]")
 end
