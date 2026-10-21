@@ -85,7 +85,7 @@ The backend is intentionally separate from the Clink hook. The same helper can b
 Examples:
 
 ```cmd
-python ai_bridge.py --prompt "summarize this folder" --cwd "%CD%" --files "README.md" --history "dir" 
+python ai_bridge.py --prompt "summarize this folder" --cwd "%CD%" --files README.md --history "dir"
 ```
 
 ```bash
