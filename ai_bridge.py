@@ -229,8 +229,14 @@ def build_user_message(job):
     file_section = "\n".join(file_snippets)
     history_section = f"\nRecent command history:\n{history}\n" if history else ""
 
+    mode = (job.get("mode") or "chat").lower()
+    if mode == "cmd":
+        assistant_mode = "You are a shell command suggestion assistant. Return only a concise, valid command or a short explanation with the command first."
+    else:
+        assistant_mode = "You are a helpful terminal assistant. Keep replies brief, actionable, and shell-aware."
+
     return (
-        "You are a helpful terminal assistant.\n"
+        f"{assistant_mode}\n"
         f"Current directory: {cwd}\n"
         f"{history_section}"
         f"{file_section}\n"
@@ -252,9 +258,15 @@ def build_prompt_from_args(args):
     file_section = "\n".join(file_snippets)
     history_section = f"\nRecent command history:\n{args.history}\n" if args.history else ""
     prompt = expand_prompt_macros(args.prompt or "", cwd=args.cwd or os.getcwd())
+    mode = (args.mode or "chat").lower()
+
+    if mode == "cmd":
+        assistant_mode = "You are a shell command suggestion assistant. Return only a concise, valid command or a short explanation with the command first."
+    else:
+        assistant_mode = "You are a helpful terminal assistant. Keep replies brief, actionable, and shell-aware."
 
     return (
-        "You are a helpful terminal assistant.\n"
+        f"{assistant_mode}\n"
         f"Current directory: {args.cwd or os.getcwd()}\n"
         f"{history_section}"
         f"{file_section}\n"
@@ -262,14 +274,20 @@ def build_prompt_from_args(args):
     )
 
 
-def call_provider(prompt, api_url=None, model=None, api_key=None, prior_messages=None):
+def call_provider(prompt, api_url=None, model=None, api_key=None, prior_messages=None, mode="chat"):
     url = resolve_api_url(api_url)
     model_name = resolve_model(model)
     key_value = resolve_api_key(api_key)
 
+    mode_name = (mode or "chat").lower()
+    if mode_name == "cmd":
+        system_text = "You are a shell command suggestion assistant for Windows cmd.exe. Prefer concise, valid commands and do not invent unsupported flags."
+    else:
+        system_text = "You are a helpful terminal assistant for the Windows command line. Use prior conversation context when present. Keep replies brief, actionable, shell-aware, and command-oriented."
+
     messages = [{
         "role": "system",
-        "content": "You are a helpful terminal assistant for the Windows command line. Use prior conversation context when present. Keep replies brief, actionable, shell-aware, and command-oriented."
+        "content": system_text,
     }]
 
     if prior_messages:
@@ -315,6 +333,21 @@ def call_provider(prompt, api_url=None, model=None, api_key=None, prior_messages
         return f"AI request failed: {e.__class__.__name__}: {e}", messages
 
 
+def dump_debug_state(session_file=None, cwd=None):
+    session_file = session_file or default_session_path()
+    messages = load_session_state(session_file)
+    lines = []
+    lines.append("CLINK-LLM_CMD debug")
+    lines.append(f"cwd: {cwd or os.getcwd()}")
+    lines.append(f"session_file: {session_file}")
+    lines.append(f"session_turns: {len(messages)}")
+    lines.append(f"provider_url: {resolve_api_url()}")
+    lines.append(f"model: {resolve_model()}")
+    lines.append(f"api_key_present: {bool(resolve_api_key())}")
+    lines.append(f"max_history_pairs: {MAX_SESSION_PAIRS}")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--job", help="path to a JSON job file")
@@ -326,6 +359,9 @@ def main():
     parser.add_argument("--model", help="override the model name")
     parser.add_argument("--api-key", help="override the API key")
     parser.add_argument("--session-file", help="path to session file for conversation persistence")
+    parser.add_argument("--mode", default="chat", help="chat or cmd")
+    parser.add_argument("--reset-session", action="store_true", help="clear the current session file")
+    parser.add_argument("--debug", action="store_true", help="print debug information")
     args = parser.parse_args()
 
     if args.job:
@@ -334,12 +370,35 @@ def main():
         except Exception as e:
             print(f"Failed to read job: {e}")
             return 1
+
         session_file = job.get("session_file") or args.session_file or default_session_path()
         prior_messages = trim_session_messages(load_session_state(session_file))
+        mode = (job.get("mode") or args.mode or "chat").lower()
+
+        if args.reset_session:
+            save_session_state([], session_file)
+            print("Session reset.")
+            return 0
+
+        if args.debug:
+            print(dump_debug_state(session_file, job.get("cwd") or args.cwd or os.getcwd()))
+            return 0
+
         prompt = build_user_message(job)
     else:
         session_file = args.session_file or default_session_path()
         prior_messages = trim_session_messages(load_session_state(session_file))
+        mode = (args.mode or "chat").lower()
+
+        if args.reset_session:
+            save_session_state([], session_file)
+            print("Session reset.")
+            return 0
+
+        if args.debug:
+            print(dump_debug_state(session_file, args.cwd or os.getcwd()))
+            return 0
+
         prompt = build_prompt_from_args(args)
 
     result, messages = call_provider(
@@ -348,6 +407,7 @@ def main():
         model=args.model,
         api_key=args.api_key,
         prior_messages=prior_messages,
+        mode=mode,
     )
 
     if prior_messages:
