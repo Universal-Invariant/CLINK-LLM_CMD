@@ -13,8 +13,21 @@ from urllib import error, request
 DEFAULT_TIMEOUT = int(os.getenv("CLINK_AI_TIMEOUT", "60"))
 MAX_SESSION_PAIRS = int(os.getenv("CLINK_AI_MAX_HISTORY", "8"))
 MAX_MACRO_OUTPUT = int(os.getenv("CLINK_AI_MAX_MACRO_OUTPUT", "12000"))
+MAX_HISTORY_LINES = int(os.getenv("CLINK_AI_MAX_HISTORY_LINES", "20"))
+MAX_TERMINAL_CHARS = int(os.getenv("CLINK_AI_MAX_TERMINAL_CHARS", "20000"))
 
 INJECTOR_REGISTRY = {}
+RECURSION_MARKERS = [
+    "$terminal$",
+    "$history$",
+    "$dir$",
+    "$git$",
+    "$cwd$",
+    "$pwd$",
+    "$last$",
+    "$(",
+    "@(",
+]
 
 
 def register_injector(name, func):
@@ -27,6 +40,20 @@ def register_injector(name, func):
 
 def normalize_injector_name(name):
     return (name or "").strip().lower().replace("-", "_")
+
+
+def should_record_prompt_text(text):
+    if text is None:
+        return False
+    value = str(text).strip()
+    if not value:
+        return False
+    lowered = value.lower()
+    if lowered.startswith(">"):
+        return False
+    if any(marker in lowered for marker in ["$terminal$", "$history$", "$dir$", "$git$", "$cwd$", "$pwd$", "$(", "@("]):
+        return False
+    return True
 
 
 def register_builtin_injectors():
@@ -189,7 +216,7 @@ def terminal_log_path():
     return os.path.join(base, "clink-llm", "terminal_log.txt")
 
 
-def read_terminal_log(max_chars=20000):
+def read_terminal_log(max_chars=MAX_TERMINAL_CHARS):
     path = terminal_log_path()
     try:
         if os.path.exists(path):
@@ -206,6 +233,8 @@ def append_terminal_log_entry(entry, path=None):
         return
     text = str(entry).strip()
     if not text:
+        return
+    if not should_record_prompt_text(text):
         return
 
     log_path = path or terminal_log_path()
@@ -276,16 +305,38 @@ def save_session_state(messages, path=None):
         pass
 
 
+def dedupe_recent_messages(messages):
+    if not isinstance(messages, list):
+        return []
+    filtered = []
+    last_user_text = None
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role == "user" and isinstance(content, str):
+            candidate = content.strip()
+            if candidate == last_user_text:
+                continue
+            last_user_text = candidate
+        filtered.append(item)
+    return filtered[-(MAX_SESSION_PAIRS * 2):]
+
+
 def trim_session_messages(messages):
     if not isinstance(messages, list):
         return []
     trimmed = []
     for item in messages:
         if isinstance(item, dict) and "role" in item and "content" in item:
-            trimmed.append({"role": item["role"], "content": str(item["content"])[:8000]})
+            content = str(item["content"])[:8000]
+            if item["role"] == "user" and not should_record_prompt_text(content):
+                continue
+            trimmed.append({"role": item["role"], "content": content})
     if len(trimmed) > MAX_SESSION_PAIRS * 2:
         trimmed = trimmed[-(MAX_SESSION_PAIRS * 2):]
-    return trimmed
+    return dedupe_recent_messages(trimmed)
 
 
 def run_shell_command(command, cwd=None):
