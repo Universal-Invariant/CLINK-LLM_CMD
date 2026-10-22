@@ -51,7 +51,19 @@ def should_record_prompt_text(text):
     lowered = value.lower()
     if lowered.startswith(">"):
         return False
-    if any(marker in lowered for marker in ["$terminal$", "$history$", "$dir$", "$git$", "$cwd$", "$pwd$", "$(", "@("]):
+    if any(
+        marker in lowered
+        for marker in [
+            "$terminal$",
+            "$history$",
+            "$dir$",
+            "$git$",
+            "$cwd$",
+            "$pwd$",
+            "$(",
+            "@(",
+        ]
+    ):
         return False
     return True
 
@@ -62,7 +74,9 @@ def register_builtin_injectors():
         return run_shell_command("dir", cwd=cwd)
 
     def history_injector(args_text="", **kwargs):
-        return (kwargs.get("history_text") or "").strip() or "No command history is available."
+        return (
+            kwargs.get("history_text") or ""
+        ).strip() or "No command history is available."
 
     def terminal_injector(args_text="", **kwargs):
         return read_terminal_log() or "No terminal output captured yet."
@@ -93,8 +107,16 @@ register_builtin_injectors()
 
 
 def load_injector_modules():
-    raw_paths = os.getenv("CLINK_AI_INJECTOR_PATHS") or os.getenv("CLINK_AI_CUSTOM_INJECTORS") or ""
-    paths = [p.strip() for p in raw_paths.replace(";", os.pathsep).split(os.pathsep) if p.strip()]
+    raw_paths = (
+        os.getenv("CLINK_AI_INJECTOR_PATHS")
+        or os.getenv("CLINK_AI_CUSTOM_INJECTORS")
+        or ""
+    )
+    paths = [
+        p.strip()
+        for p in raw_paths.replace(";", os.pathsep).split(os.pathsep)
+        if p.strip()
+    ]
     for path in paths:
         try:
             module_name = os.path.splitext(os.path.basename(path))[0]
@@ -103,7 +125,9 @@ def load_injector_modules():
                 continue
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            registry = getattr(module, "INJECTORS", None) or getattr(module, "injectors", None)
+            registry = getattr(module, "INJECTORS", None) or getattr(
+                module, "injectors", None
+            )
             if isinstance(registry, dict):
                 for name, func in registry.items():
                     register_injector(name, func)
@@ -139,7 +163,11 @@ def is_full_endpoint(value):
     if not value:
         return False
     value = clean_url(value)
-    return bool(re.search(r"/(?:v1|api)/", value)) or value.endswith("/chat/completions") or value.endswith("/api/chat")
+    return (
+        bool(re.search(r"/(?:v1|api)/", value))
+        or value.endswith("/chat/completions")
+        or value.endswith("/api/chat")
+    )
 
 
 def resolve_api_url(explicit_url=None):
@@ -174,7 +202,11 @@ def resolve_api_url(explicit_url=None):
 
         if "ollama" in value.lower():
             return join_url(value, "api/chat")
-        if "lmstudio" in value.lower() or "localhost:1234" in value.lower() or "localhost:12349" in value.lower():
+        if (
+            "lmstudio" in value.lower()
+            or "localhost:1234" in value.lower()
+            or "localhost:12349" in value.lower()
+        ):
             return join_url(value, "v1/chat/completions")
         return join_url(value, "v1/chat/completions")
 
@@ -321,7 +353,7 @@ def dedupe_recent_messages(messages):
                 continue
             last_user_text = candidate
         filtered.append(item)
-    return filtered[-(MAX_SESSION_PAIRS * 2):]
+    return filtered[-(MAX_SESSION_PAIRS * 2) :]
 
 
 def trim_session_messages(messages):
@@ -335,7 +367,7 @@ def trim_session_messages(messages):
                 continue
             trimmed.append({"role": item["role"], "content": content})
     if len(trimmed) > MAX_SESSION_PAIRS * 2:
-        trimmed = trimmed[-(MAX_SESSION_PAIRS * 2):]
+        trimmed = trimmed[-(MAX_SESSION_PAIRS * 2) :]
     return dedupe_recent_messages(trimmed)
 
 
@@ -349,7 +381,7 @@ def run_shell_command(command, cwd=None):
             text=True,
             timeout=30,
         )
-        output = (proc.stdout or "")
+        output = proc.stdout or ""
         if proc.stderr:
             output = output + ("\n" if output else "") + proc.stderr
         output = output.strip()
@@ -403,11 +435,46 @@ def append_auto_context(prompt, cwd=None, history_text=""):
     lower = p.lower()
     additions = []
 
-    if any(item in lower for item in ["current folder", "this folder", "current directory", "directory contents", "folder contents"]) and "$dir$" not in p and "$(dir" not in p and "$(ls" not in p:
+    if (
+        any(
+            item in lower
+            for item in [
+                "current folder",
+                "this folder",
+                "current directory",
+                "directory contents",
+                "folder contents",
+            ]
+        )
+        and "$dir$" not in p
+        and "$(dir" not in p
+        and "$(ls" not in p
+    ):
         additions.append("\nCurrent folder contents:\n$dir$\n")
-    if any(item in lower for item in ["what did i run last", "history", "recent commands", "command history"]) and "$history$" not in p and "$(git" not in p:
+    if (
+        any(
+            item in lower
+            for item in [
+                "what did i run last",
+                "history",
+                "recent commands",
+                "command history",
+            ]
+        )
+        and "$history$" not in p
+        and "$(git" not in p
+    ):
         additions.append("\nRecent command history:\n$history$\n")
-    if any(item in lower for item in ["build errors", "terminal output", "errors", "last output", "console"]):
+    if any(
+        item in lower
+        for item in [
+            "build errors",
+            "terminal output",
+            "errors",
+            "last output",
+            "console",
+        ]
+    ):
         additions.append("\nRecent terminal context:\n$terminal$\n")
 
     if additions:
@@ -418,8 +485,6 @@ def append_auto_context(prompt, cwd=None, history_text=""):
 def expand_prompt_macros(text, cwd=None, history_text="", limit=MAX_MACRO_OUTPUT):
     if not text:
         return text
-
-    text = append_auto_context(text, cwd=cwd, history_text=history_text)
 
     def replace_match(match):
         inner = match.group(1) if match.group(1) is not None else match.group(2)
@@ -434,25 +499,9 @@ def expand_prompt_macros(text, cwd=None, history_text="", limit=MAX_MACRO_OUTPUT
         if builtin:
             return builtin[:limit]
 
-        token = token.replace("|>", "|")
-        token = token.strip()
-        if not token:
-            return ""
         return run_shell_command(token, cwd)[:limit]
 
-    text = re.sub(r"\$\((.*?)\)|\$([^$\n]+?)\$", replace_match, text)
-
-    def replace_custom(match):
-        body = match.group(0)
-        m = re.match(r"@\(([^()]+)\s*\((.*)\)\)", body, flags=re.S)
-        if not m:
-            return body
-        name = m.group(1).strip()
-        args_text = m.group(2).strip()
-        result = call_registered_injector(name, args_text, cwd=cwd, history_text=history_text)
-        return result[:limit]
-
-    return re.sub(r"@\([A-Za-z0-9_.-]+\s*\([^)]*\)\)", replace_custom, text, flags=re.S)
+    return re.sub(r"\$\((.*?)\)|\$([^$\n]+?)\$", replace_match, text)
 
 
 def build_user_message(job):
@@ -465,7 +514,9 @@ def build_user_message(job):
     for file in files:
         text = read_text_file(file)
         if text:
-            file_snippets.append(f"\n--- FILE: {file} ---\n{text[:20000]}\n--- END FILE ---\n")
+            file_snippets.append(
+                f"\n--- FILE: {file} ---\n{text[:20000]}\n--- END FILE ---\n"
+            )
 
     file_section = "\n".join(file_snippets)
     history_section = f"\nRecent command history:\n{history}\n" if history else ""
@@ -487,19 +538,25 @@ def build_user_message(job):
 
 def build_prompt_from_args(args):
     files = []
-    for item in (args.files or []):
+    for item in args.files or []:
         files.extend(split_files(item))
 
     file_snippets = []
     for file in files:
         text = read_text_file(file)
         if text:
-            file_snippets.append(f"\n--- FILE: {file} ---\n{text[:20000]}\n--- END FILE ---\n")
+            file_snippets.append(
+                f"\n--- FILE: {file} ---\n{text[:20000]}\n--- END FILE ---\n"
+            )
 
     file_section = "\n".join(file_snippets)
-    history_section = f"\nRecent command history:\n{args.history}\n" if args.history else ""
+    history_section = (
+        f"\nRecent command history:\n{args.history}\n" if args.history else ""
+    )
     cwd = args.cwd or os.getcwd()
-    prompt = expand_prompt_macros(args.prompt or "", cwd=cwd, history_text=args.history or "")
+    prompt = expand_prompt_macros(
+        args.prompt or "", cwd=cwd, history_text=args.history or ""
+    )
     mode = (args.mode or "chat").lower()
 
     if mode == "cmd":
@@ -516,7 +573,9 @@ def build_prompt_from_args(args):
     )
 
 
-def call_provider(prompt, api_url=None, model=None, api_key=None, prior_messages=None, mode="chat"):
+def call_provider(
+    prompt, api_url=None, model=None, api_key=None, prior_messages=None, mode="chat"
+):
     url = resolve_api_url(api_url)
     model_name = resolve_model(model)
     key_value = resolve_api_key(api_key)
@@ -527,10 +586,12 @@ def call_provider(prompt, api_url=None, model=None, api_key=None, prior_messages
     else:
         system_text = "You are a helpful terminal assistant for the Windows command line. Use prior conversation context when present. Keep replies brief, actionable, shell-aware, and command-oriented."
 
-    messages = [{
-        "role": "system",
-        "content": system_text,
-    }]
+    messages = [
+        {
+            "role": "system",
+            "content": system_text,
+        }
+    ]
 
     if prior_messages:
         for item in prior_messages:
@@ -600,14 +661,22 @@ def main():
     parser.add_argument("--cwd", help="working directory")
     parser.add_argument("--history", help="recent command history")
     parser.add_argument("--files", nargs="*", help="file names or paths to include")
-    parser.add_argument("--api-url", help="override the provider base or full endpoint URL")
+    parser.add_argument(
+        "--api-url", help="override the provider base or full endpoint URL"
+    )
     parser.add_argument("--model", help="override the model name")
     parser.add_argument("--api-key", help="override the API key")
-    parser.add_argument("--session-file", help="path to session file for conversation persistence")
+    parser.add_argument(
+        "--session-file", help="path to session file for conversation persistence"
+    )
     parser.add_argument("--mode", default="chat", help="chat or cmd")
-    parser.add_argument("--reset-session", action="store_true", help="clear the current session file")
+    parser.add_argument(
+        "--reset-session", action="store_true", help="clear the current session file"
+    )
     parser.add_argument("--debug", action="store_true", help="print debug information")
-    parser.add_argument("--log-entry", help="append a terminal entry to the transcript log")
+    parser.add_argument(
+        "--log-entry", help="append a terminal entry to the transcript log"
+    )
     args = parser.parse_args()
 
     if args.log_entry:
@@ -621,7 +690,9 @@ def main():
             print(f"Failed to read job: {e}")
             return 1
 
-        session_file = job.get("session_file") or args.session_file or default_session_path()
+        session_file = (
+            job.get("session_file") or args.session_file or default_session_path()
+        )
         prior_messages = trim_session_messages(load_session_state(session_file))
         mode = (job.get("mode") or args.mode or "chat").lower()
 
@@ -631,7 +702,11 @@ def main():
             return 0
 
         if args.debug:
-            print(dump_debug_state(session_file, job.get("cwd") or args.cwd or os.getcwd()))
+            print(
+                dump_debug_state(
+                    session_file, job.get("cwd") or args.cwd or os.getcwd()
+                )
+            )
             return 0
 
         prompt = build_user_message(job)
@@ -650,7 +725,6 @@ def main():
             return 0
 
         prompt = build_prompt_from_args(args)
-
     result, messages = call_provider(
         prompt,
         api_url=args.api_url,
@@ -661,9 +735,18 @@ def main():
     )
 
     if prior_messages:
-        conversation = trim_session_messages(prior_messages + [{"role": "user", "content": prompt}, {"role": "assistant", "content": result}])
+        conversation = trim_session_messages(
+            prior_messages
+            + [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": result},
+            ]
+        )
     else:
-        conversation = [{"role": "user", "content": prompt}, {"role": "assistant", "content": result}]
+        conversation = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": result},
+        ]
     save_session_state(conversation, session_file)
 
     print("")
