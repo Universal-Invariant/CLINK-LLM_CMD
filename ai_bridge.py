@@ -38,7 +38,7 @@ def register_builtin_injectors():
         return (kwargs.get("history_text") or "").strip() or "No command history is available."
 
     def terminal_injector(args_text="", **kwargs):
-        return (kwargs.get("history_text") or "").strip() or "No terminal output captured yet."
+        return read_terminal_log() or "No terminal output captured yet."
 
     def git_injector(args_text="", **kwargs):
         cwd = kwargs.get("cwd") or os.getcwd()
@@ -176,6 +176,50 @@ def resolve_api_key(explicit_key=None):
     return "lm-studio"
 
 
+def terminal_log_path():
+    env_candidates = [
+        os.getenv("CLINK_AI_TERMINAL_LOG"),
+        os.getenv("CLINK_AI_TERMINAL_LOG_PATH"),
+    ]
+    for candidate in env_candidates:
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+
+    base = os.getenv("LOCALAPPDATA") or os.getenv("USERPROFILE") or os.getcwd()
+    return os.path.join(base, "clink-llm", "terminal_log.txt")
+
+
+def read_terminal_log(max_chars=20000):
+    path = terminal_log_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                data = f.read(max_chars)
+            return data.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def append_terminal_log_entry(entry, path=None):
+    if entry is None:
+        return
+    text = str(entry).strip()
+    if not text:
+        return
+
+    log_path = path or terminal_log_path()
+    try:
+        folder = os.path.dirname(log_path)
+        if folder and not os.path.exists(folder):
+            os.makedirs(folder, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(text)
+            f.write("\n")
+    except Exception:
+        pass
+
+
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -275,7 +319,7 @@ def resolve_builtin_value(name, cwd=None, history_text=""):
     if token in {"history", "cmdhistory", "commandhistory"}:
         return history_text.strip() or "No command history is available."
     if token in {"terminal", "output", "console", "screen"}:
-        return history_text.strip() or "No terminal output captured yet."
+        return read_terminal_log() or "No terminal output captured yet."
     if token in {"git", "gitstatus", "status"}:
         return run_shell_command("git status --short --branch", cwd)
     if token in {"pwd", "cwd", "path"}:
@@ -493,6 +537,7 @@ def dump_debug_state(session_file=None, cwd=None):
     lines.append(f"api_key_present: {bool(resolve_api_key())}")
     lines.append(f"max_history_pairs: {MAX_SESSION_PAIRS}")
     lines.append(f"max_macro_output: {MAX_MACRO_OUTPUT}")
+    lines.append(f"terminal_log_path: {terminal_log_path()}")
     lines.append(f"registered_injectors: {sorted(INJECTOR_REGISTRY.keys())}")
     return "\n".join(lines)
 
@@ -511,7 +556,12 @@ def main():
     parser.add_argument("--mode", default="chat", help="chat or cmd")
     parser.add_argument("--reset-session", action="store_true", help="clear the current session file")
     parser.add_argument("--debug", action="store_true", help="print debug information")
+    parser.add_argument("--log-entry", help="append a terminal entry to the transcript log")
     args = parser.parse_args()
+
+    if args.log_entry:
+        append_terminal_log_entry(args.log_entry)
+        return 0
 
     if args.job:
         try:
