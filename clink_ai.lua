@@ -11,9 +11,11 @@ local function default_bridge_path()
         source = source:sub(2)
     end
 
-    local dir = source:match("^(.*)\\[^\\]+$") or source:match("^(.*)/[^/]+$") or "."
+    local dir = source:match("^(.*)[\\/][^\\/]+$") or "."
     local candidate = dir .. "\\ai_bridge.py"
-    if os.rename(candidate, candidate) then
+    local f = io.open(candidate, "r")
+    if f then
+        f:close()
         return candidate
     end
 
@@ -21,6 +23,7 @@ local function default_bridge_path()
 end
 
 local bridge = os.getenv("CLINK_AI_BRIDGE") or default_bridge_path()
+local session_file = os.getenv("CLINK_AI_SESSION_FILE") or (os.getenv("LOCALAPPDATA") or os.getenv("USERPROFILE") or ".") .. "\\clink-llm\\chat_session.json"
 
 local function trim(s)
     if s == nil then return "" end
@@ -112,6 +115,7 @@ local function save_job(prompt, files, history)
         f:write("  \"prompt\": \"" .. json_escape(prompt) .. "\",\n")
         f:write("  \"cwd\": \"" .. json_escape(os.getenv("CD") or os.getenv("PWD") or ".") .. "\",\n")
         f:write("  \"history\": \"" .. json_escape(history or "") .. "\",\n")
+        f:write("  \"session_file\": \"" .. json_escape(session_file) .. "\",\n")
         f:write("  \"files\": ")
         write_json_array(f, files or {})
         f:write(",\n")
@@ -126,7 +130,7 @@ end
 local function queue_ai_request(prompt, files, history)
     local jobfile = save_job(prompt, files, history)
     local command = string.format(
-        'start "" /b cmd /c python "%s" --job "%s"',
+        'python "%s" --job "%s"',
         bridge,
         jobfile
     )
