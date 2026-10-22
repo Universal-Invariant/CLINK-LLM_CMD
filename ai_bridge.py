@@ -11,6 +11,7 @@ from urllib import error, request
 
 DEFAULT_TIMEOUT = int(os.getenv("CLINK_AI_TIMEOUT", "60"))
 MAX_SESSION_PAIRS = int(os.getenv("CLINK_AI_MAX_HISTORY", "8"))
+MAX_MACRO_OUTPUT = int(os.getenv("CLINK_AI_MAX_MACRO_OUTPUT", "12000"))
 
 
 def clean_url(base):
@@ -170,54 +171,101 @@ def trim_session_messages(messages):
     return trimmed
 
 
-def expand_prompt_macros(text, cwd=None, limit=20000):
+def run_shell_command(command, cwd=None):
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd or os.getcwd(),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = (proc.stdout or "")
+        if proc.stderr:
+            output = output + ("\n" if output else "") + proc.stderr
+        output = output.strip()
+        if not output:
+            return "[command produced no output]"
+        return output[:MAX_MACRO_OUTPUT]
+    except Exception as exc:
+        return f"[command failed: {exc}]"
+
+
+def resolve_builtin_value(name, cwd=None, history_text=""):
+    token = (name or "").strip().lower()
+    if not token:
+        return ""
+
+    if token in {"dir", "ls", "list", "folder", "cwdlist"}:
+        return run_shell_command("dir", cwd)
+    if token in {"history", "cmdhistory", "commandhistory"}:
+        return history_text.strip() or "No command history is available."
+    if token in {"terminal", "output", "console", "screen"}:
+        return history_text.strip() or "No terminal output captured yet."
+    if token in {"git", "gitstatus", "status"}:
+        return run_shell_command("git status --short --branch", cwd)
+    if token in {"pwd", "cwd", "path"}:
+        return cwd or os.getcwd()
+    if token in {"last", "lastcommand", "lastcmd"}:
+        value = os.getenv("LAST_COMMAND") or os.getenv("CLINK_LAST_COMMAND") or ""
+        return value.strip() or "No recent command was captured."
+    return ""
+
+
+def append_auto_context(prompt, cwd=None, history_text=""):
+    if not prompt:
+        return prompt
+
+    p = prompt.strip()
+    lower = p.lower()
+    additions = []
+
+    if any(item in lower for item in ["current folder", "this folder", "current directory", "directory contents", "folder contents"]) and "$dir$" not in p and "$(dir" not in p and "$(ls" not in p:
+        additions.append("\nCurrent folder contents:\n$dir$\n")
+    if any(item in lower for item in ["what did i run last", "history", "recent commands", "command history"]) and "$history$" not in p and "$(git" not in p:
+        additions.append("\nRecent command history:\n$history$\n")
+    if any(item in lower for item in ["build errors", "terminal output", "errors", "last output", "console"]):
+        additions.append("\nRecent terminal context:\n$terminal$\n")
+
+    if additions:
+        return p + "\n" + "\n".join(additions)
+    return p
+
+
+def expand_prompt_macros(text, cwd=None, history_text="", limit=MAX_MACRO_OUTPUT):
     if not text:
         return text
 
-    cwd = cwd or os.getcwd()
-    alias_map = {
-        "dir": "dir",
-        "cwd": "cd",
-        "pwd": "cd",
-        "path": "cd",
-    }
+    text = append_auto_context(text, cwd=cwd, history_text=history_text)
 
     def replace_match(match):
         inner = match.group(1) if match.group(1) is not None else match.group(2)
-        command = inner.strip()
-        if not command:
+        token = inner.strip()
+        if not token:
             return ""
 
-        command = command.replace("|>", "|")
-        lowered = command.strip().lower()
-        if lowered in alias_map:
-            command = alias_map[lowered]
+        if token.startswith("$") and token.endswith("$"):
+            token = token[1:-1]
 
-        try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            output = (proc.stdout or "") + ("\n" + (proc.stderr or "") if proc.stderr else "")
-            output = output.strip()
-            if not output:
-                return "[command produced no output]"
-            return output[:limit]
-        except Exception as exc:
-            return f"[command failed: {exc}]"
+        builtin = resolve_builtin_value(token, cwd=cwd, history_text=history_text)
+        if builtin:
+            return builtin[:limit]
+
+        token = token.replace("|>", "|")
+        token = token.strip()
+        if not token:
+            return ""
+        return run_shell_command(token, cwd)[:limit]
 
     expanded = re.sub(r"\$\((.*?)\)|\$([^$\n]+?)\$", replace_match, text)
     return expanded
 
 
 def build_user_message(job):
-    prompt = expand_prompt_macros(job.get("prompt", ""), cwd=job.get("cwd", "") or os.getcwd())
-    cwd = job.get("cwd", "")
+    cwd = job.get("cwd", "") or os.getcwd()
     history = job.get("history", "")
+    prompt = expand_prompt_macros(job.get("prompt", ""), cwd=cwd, history_text=history)
     files = job.get("files", [])
 
     file_snippets = []
@@ -257,7 +305,8 @@ def build_prompt_from_args(args):
 
     file_section = "\n".join(file_snippets)
     history_section = f"\nRecent command history:\n{args.history}\n" if args.history else ""
-    prompt = expand_prompt_macros(args.prompt or "", cwd=args.cwd or os.getcwd())
+    cwd = args.cwd or os.getcwd()
+    prompt = expand_prompt_macros(args.prompt or "", cwd=cwd, history_text=args.history or "")
     mode = (args.mode or "chat").lower()
 
     if mode == "cmd":
@@ -267,7 +316,7 @@ def build_prompt_from_args(args):
 
     return (
         f"{assistant_mode}\n"
-        f"Current directory: {args.cwd or os.getcwd()}\n"
+        f"Current directory: {cwd}\n"
         f"{history_section}"
         f"{file_section}\n"
         f"User request: {prompt}\n"
@@ -345,6 +394,7 @@ def dump_debug_state(session_file=None, cwd=None):
     lines.append(f"model: {resolve_model()}")
     lines.append(f"api_key_present: {bool(resolve_api_key())}")
     lines.append(f"max_history_pairs: {MAX_SESSION_PAIRS}")
+    lines.append(f"max_macro_output: {MAX_MACRO_OUTPUT}")
     return "\n".join(lines)
 
 
