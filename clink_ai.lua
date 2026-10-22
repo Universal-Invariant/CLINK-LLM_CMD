@@ -101,16 +101,18 @@ end
 
 local function command_mode_for(prompt)
     local s = trim(prompt)
-    if s:lower() == "help" then
+    local lower = s:lower()
+
+    if lower == "help" or lower:sub(1, 5) == "help:" then
         return "help"
     end
-    if s:lower() == "reset" then
+    if lower == "reset" then
         return "reset"
     end
-    if s:lower() == "debug" then
+    if lower == "debug" then
         return "debug"
     end
-    if s:lower():sub(1, 4) == "cmd " then
+    if lower:sub(1, 4) == "cmd " then
         return "cmd"
     end
     return "chat"
@@ -207,10 +209,14 @@ local function on_filter_input(line)
         print("  " .. prefix .. " what did I run last?")
         print("  " .. prefix .. " summarize !README.md!")
         print("  " .. prefix .. " $dir$")
+        print("  " .. prefix .. " $history$")
+        print("  " .. prefix .. " $terminal$")
         print("  " .. prefix .. " $(git status)")
+        print("  " .. prefix .. " @(registered_python_function(args))")
         print("  " .. prefix .. " >cmd find text files")
         print("  " .. prefix .. " >reset")
         print("  " .. prefix .. " >debug")
+        print("  " .. prefix .. "help:clink:keys  What command lists recent directory output?")
         return ""
     end
 
