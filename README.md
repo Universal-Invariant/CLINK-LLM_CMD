@@ -43,6 +43,56 @@ Files in this repo:
    > summarize !README.md!
    ```
 
+## Special prompt commands and macros
+
+The plugin supports a few special prompt forms for making the AI context-aware and shell-aware.
+
+### Built-in commands
+
+These are not normal shell commands; they are recognized by the assistant front-end and handled specially.
+
+- `>help` — show AI usage examples
+- `>reset` — reset the current conversation session
+- `>debug` — print the current provider/model/session state
+- `>cmd <command>` — request a shell command suggestion instead of a narrative answer
+
+Example:
+
+```cmd
+>cmd find text files in this folder
+>debug
+>reset
+```
+
+### Inline command execution tokens
+
+You can inject the output of shell commands directly into the prompt. This is useful for asking the assistant to interpret actual local command output.
+
+Supported forms:
+
+- `$dir$` → runs `dir` and inserts its output
+- `$(git status)` → runs the command and inserts the captured output
+- `$(dir /b)` → runs a command and inserts the captured output
+- `>|` or `|>` style shell piping is supported conceptually for chaining a capture into a downstream command or prompt context
+
+Examples:
+
+```cmd
+>Summarize the content of this $dir$
+>What should I do next based on $(git status)
+>Explain the recent repo state from $(git log --oneline -5)
+>Inspect this directory and tell me what stands out: $dir$
+```
+
+The command output is trimmed to a safe size before being sent to the model so long shell output does not blow up the prompt.
+
+### Prompt conventions
+
+- `>` = general terminal assistant / conversational mode
+- `>cmd ...` = ask for a command suggestion instead of a general answer
+- `!file.txt!` = include that local file in the prompt context
+- `$cmd$` and `$(cmd)` = inline command execution and output capture
+
 ## Configuration
 
 The default trigger prefix is `>`.
@@ -103,12 +153,12 @@ The path is not forced to one exact shape. The backend uses the provider source 
 
 ## Why the bridge is Python
 
-Clink itself must be Lua because it is a Lua-hosted shell extension. The AI bridge does not have to be Lua; Python is a better fit for HTTP, JSON, file context, session state, and provider normalization.
+Clink itself must be Lua because it is a Lua-hosted shell extension. The AI bridge does not have to be Lua; Python is a better fit for HTTP, JSON, file context, session state, command-output capture, and provider normalization.
 
 The pattern is intentionally split:
 
 - `clink_ai.lua` handles shell interception and route selection.
-- `ai_bridge.py` handles model calls, file context, provider normalization, and bounded session memory.
+- `ai_bridge.py` handles model calls, file context, command-output injection, provider normalization, and bounded session memory.
 
 This keeps the shell hook thin while making the model layer easier to reuse from PowerShell, bash, or other scripts.
 
@@ -143,6 +193,7 @@ Planned follow-up improvements for this project:
 - Add richer prompt redrawing and more reliable prompt restoration after AI output.
 - Add confirm/continue semantics for follow-up responses like `y`, `yes`, `no`, and `continue`.
 - Add explicit chat vs command-suggestion modes (`> ...` versus `>cmd ...`).
+- Add command-output capture for more shell pipelines and richer prompt macros.
 - Include current git status, recent directory listing, environment summary, and selected file metadata.
 - Add a reset/debug/help mode for session management.
 - Add a PowerShell wrapper and bash/zsh wrapper that call the same backend contract as Clink.
