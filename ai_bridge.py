@@ -2,6 +2,7 @@
 # Reusable shell-agnostic helper for calling an LLM from Clink, PowerShell, bash, etc.
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -12,6 +13,78 @@ from urllib import error, request
 DEFAULT_TIMEOUT = int(os.getenv("CLINK_AI_TIMEOUT", "60"))
 MAX_SESSION_PAIRS = int(os.getenv("CLINK_AI_MAX_HISTORY", "8"))
 MAX_MACRO_OUTPUT = int(os.getenv("CLINK_AI_MAX_MACRO_OUTPUT", "12000"))
+
+INJECTOR_REGISTRY = {}
+
+
+def register_injector(name, func):
+    if not callable(func):
+        return
+    key = (name or "").strip().lower().replace("-", "_")
+    if key:
+        INJECTOR_REGISTRY[key] = func
+
+
+def normalize_injector_name(name):
+    return (name or "").strip().lower().replace("-", "_")
+
+
+def register_builtin_injectors():
+    def dir_injector(args_text="", **kwargs):
+        cwd = kwargs.get("cwd") or os.getcwd()
+        return run_shell_command("dir", cwd=cwd)
+
+    def history_injector(args_text="", **kwargs):
+        return (kwargs.get("history_text") or "").strip() or "No command history is available."
+
+    def terminal_injector(args_text="", **kwargs):
+        return (kwargs.get("history_text") or "").strip() or "No terminal output captured yet."
+
+    def git_injector(args_text="", **kwargs):
+        cwd = kwargs.get("cwd") or os.getcwd()
+        return run_shell_command("git status --short --branch", cwd=cwd)
+
+    def pwd_injector(args_text="", **kwargs):
+        return kwargs.get("cwd") or os.getcwd()
+
+    def last_injector(args_text="", **kwargs):
+        value = os.getenv("LAST_COMMAND") or os.getenv("CLINK_LAST_COMMAND") or ""
+        return value.strip() or "No recent command was captured."
+
+    register_injector("dir", dir_injector)
+    register_injector("history", history_injector)
+    register_injector("terminal", terminal_injector)
+    register_injector("git", git_injector)
+    register_injector("git_status", git_injector)
+    register_injector("cwd", pwd_injector)
+    register_injector("pwd", pwd_injector)
+    register_injector("last", last_injector)
+    register_injector("last_command", last_injector)
+
+
+register_builtin_injectors()
+
+
+def load_injector_modules():
+    raw_paths = os.getenv("CLINK_AI_INJECTOR_PATHS") or os.getenv("CLINK_AI_CUSTOM_INJECTORS") or ""
+    paths = [p.strip() for p in raw_paths.replace(";", os.pathsep).split(os.pathsep) if p.strip()]
+    for path in paths:
+        try:
+            module_name = os.path.splitext(os.path.basename(path))[0]
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if not spec or not spec.loader:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            registry = getattr(module, "INJECTORS", None) or getattr(module, "injectors", None)
+            if isinstance(registry, dict):
+                for name, func in registry.items():
+                    register_injector(name, func)
+        except Exception:
+            pass
+
+
+load_injector_modules()
 
 
 def clean_url(base):
@@ -213,6 +286,20 @@ def resolve_builtin_value(name, cwd=None, history_text=""):
     return ""
 
 
+def call_registered_injector(name, args_text="", cwd=None, history_text=""):
+    normalized = normalize_injector_name(name)
+    func = INJECTOR_REGISTRY.get(normalized)
+    if not callable(func):
+        return f"[unknown injector: {name}]"
+    try:
+        try:
+            return str(func(args_text, cwd=cwd, history_text=history_text))
+        except TypeError:
+            return str(func(args_text))
+    except Exception as exc:
+        return f"[injector failed: {name}: {exc}]"
+
+
 def append_auto_context(prompt, cwd=None, history_text=""):
     if not prompt:
         return prompt
@@ -258,8 +345,19 @@ def expand_prompt_macros(text, cwd=None, history_text="", limit=MAX_MACRO_OUTPUT
             return ""
         return run_shell_command(token, cwd)[:limit]
 
-    expanded = re.sub(r"\$\((.*?)\)|\$([^$\n]+?)\$", replace_match, text)
-    return expanded
+    text = re.sub(r"\$\((.*?)\)|\$([^$\n]+?)\$", replace_match, text)
+
+    def replace_custom(match):
+        body = match.group(0)
+        m = re.match(r"@\(([^()]+)\s*\((.*)\)\)", body, flags=re.S)
+        if not m:
+            return body
+        name = m.group(1).strip()
+        args_text = m.group(2).strip()
+        result = call_registered_injector(name, args_text, cwd=cwd, history_text=history_text)
+        return result[:limit]
+
+    return re.sub(r"@\([A-Za-z0-9_.-]+\s*\([^)]*\)\)", replace_custom, text, flags=re.S)
 
 
 def build_user_message(job):
@@ -395,6 +493,7 @@ def dump_debug_state(session_file=None, cwd=None):
     lines.append(f"api_key_present: {bool(resolve_api_key())}")
     lines.append(f"max_history_pairs: {MAX_SESSION_PAIRS}")
     lines.append(f"max_macro_output: {MAX_MACRO_OUTPUT}")
+    lines.append(f"registered_injectors: {sorted(INJECTOR_REGISTRY.keys())}")
     return "\n".join(lines)
 
 
