@@ -7,27 +7,41 @@ The shell-side hook intercepts lines beginning with a configurable prefix (defau
 Files in this repo:
 
 - `clink_ai.lua` — Clink Lua plugin
-- `ai_bridge.py` — reusable helper that calls an LLM backend and can also be invoked directly from PowerShell, bash, or other scripts
+- `ai_bridge.py` — reusable Python backend that calls an LLM API and can also be invoked directly from PowerShell, bash, or other scripts
+- `clink_start.cmd` — minimal startup script
 
+## Install the plugin in Clink
 
-## Install
-The Clink install step using "clink installscripts <script_path>".
-The default same-directory detection for `ai_bridge.py` or override env var if the file is stored elsewhere.
+1. Put `clink_ai.lua` in a scripts directory that Clink will load.
 
-## Quick usage
+   The easiest way is to register a script directory with Clink:
 
-1. Put `clink_ai.lua` in a Clink scripts directory.
-2. Put `ai_bridge.py` somewhere convenient.
-3. Set your environment variables.
+   ```cmd
+   clink installscripts C:\path\to\clink-scripts
+   ```
+
+   This stores the script path in the registry so Clink loads it for all installs.
+
+2. Put `ai_bridge.py` alongside the script, or set `CLINK_AI_BRIDGE` to its actual path.
+
+   For example:
+
+   ```cmd
+   set CLINK_AI_BRIDGE=C:\tools\clink-llm\ai_bridge.py
+   ```
+
+3. If `CLINK_AI_BRIDGE` is not set, the Lua plugin tries to find `ai_bridge.py` in the same directory as `clink_ai.lua` before falling back to a default path.
+
 4. Start `cmd.exe` with Clink enabled.
-5. Type prompts such as:
 
-```cmd
-> summarize the current folder
-> explain build errors
-> what did I run last?
-> summarize !README.md!
-```
+5. Try prompts such as:
+
+   ```cmd
+   > summarize the current folder
+   > explain build errors
+   > what did I run last?
+   > summarize !README.md!
+   ```
 
 ## Configuration
 
@@ -47,28 +61,28 @@ The bridge resolves its backend configuration with a layered fallback strategy:
 - `LMSTUDIO_API_BASE`
 - `OPENAI_BASE_URL`
 - `OLLAMA_HOST`
-- default: `http://localhost:12349` for local fallbacks
+- fallback default: `http://localhost:12349`
 
-It also resolves model and key using similar fallbacks:
+It resolves the model using:
 
 - `CLINK_AI_MODEL`
 - `OPENAI_MODEL`
 - `LLM_MODEL`
-- default model: `local-model`
+- fallback: `local-model`
+
+It resolves the API key using:
 
 - `CLINK_AI_API_KEY`
 - `OPENAI_API_KEY`
-- default dummy key: `lm-studio`
+- fallback: `lm-studio`
 
-Example:
+Examples:
 
 ```cmd
-set CLINK_AI_URL=http://localhost:1234/v1/chat/completions
+set CLINK_AI_URL=http://localhost:12349/v1/chat/completions
 set CLINK_AI_MODEL=local-model
 set CLINK_AI_API_KEY=lm-studio
 ```
-
-Example using OpenAI-compatible local endpoints:
 
 ```cmd
 set OPENAI_BASE_URL=http://localhost:12349
@@ -76,45 +90,35 @@ set OPENAI_MODEL=google/gemma-3-12b
 set OPENAI_API_KEY=AnyKey
 ```
 
-Example using Ollama:
-
 ```cmd
 set OLLAMA_HOST=http://localhost:12349
 set LLM_MODEL=llama3.2
 ```
 
+The path is not forced to one exact shape. The backend uses the provider source to decide the proper API path:
+
+- OpenAI-compatible / LM Studio: `/v1/chat/completions`
+- Ollama: `/api/chat`
+- otherwise, the bridge falls back to a reasonable default
+
 ## Why the bridge is Python
 
-Clink itself must be Lua because it is a Lua-based extension host. The AI bridge does not need to be Lua, and in practice Python is a better fit for HTTP, JSON, file reading, and backend abstraction.
+Clink itself must be Lua because it is a Lua-hosted shell extension. The AI bridge does not have to be Lua; Python is a better fit for HTTP, JSON, file context, session state, and provider normalization.
 
-The pattern is deliberately split:
+The pattern is intentionally split:
 
 - `clink_ai.lua` handles shell interception and route selection.
-- `ai_bridge.py` handles model calls, file context, and provider normalization.
+- `ai_bridge.py` handles model calls, file context, provider normalization, and bounded session memory.
 
 This keeps the shell hook thin while making the model layer easier to reuse from PowerShell, bash, or other scripts.
 
-## Provider URL normalization
+## Conversation memory and prompt handling
 
-The bridge does not force a single path for all providers. Different providers use different API shapes.
+The helper keeps a bounded conversation history in a local session file under `%LOCALAPPDATA%\clink-llm\chat_session.json`.
 
-Examples:
+This prevents the assistant from forgetting the previous exchange and keeps the prompt window manageable. The history is trimmed to a small number of recent turns to avoid blowing the model's context window.
 
-- OpenAI-compatible local servers: `http://host:port/v1/chat/completions`
-- Ollama: `http://host:port/api/chat`
-- LM Studio: often `http://host:port/v1/chat/completions`
-
-The resolver should normalize this automatically instead of requiring one hard-coded path. That makes the tool more robust across providers and avoids forcing the user to match one API layout.
-
-## Features
-
-This project currently includes:
-
-- `!file.txt!` reference detection
-- recent command history capture
-- current working directory context
-- provider-aware URL selection and fallback
-- direct backend invocation from Python scripts and shell wrappers
+The bridge is designed for terminal usage, so the system prompt emphasizes short, actionable output and continued terminal context.
 
 ## Backend reuse across shells
 
@@ -136,10 +140,11 @@ A PowerShell wrapper would call the same script with similar arguments. The shel
 
 Planned follow-up improvements for this project:
 
-- Add true asynchronous job processing so the shell remains responsive while the model runs.
-- Add a more structured parser for commands like `> summarize !README.md!` and `> explain build errors`.
-- Include richer context such as current git status, recent directory listing, environment summary, and selected file metadata.
-- Add a status indicator or prompt update so users can tell when a model request is queued, running, or complete.
+- Add richer prompt redrawing and more reliable prompt restoration after AI output.
+- Add confirm/continue semantics for follow-up responses like `y`, `yes`, `no`, and `continue`.
+- Add explicit chat vs command-suggestion modes (`> ...` versus `>cmd ...`).
+- Include current git status, recent directory listing, environment summary, and selected file metadata.
+- Add a reset/debug/help mode for session management.
 - Add a PowerShell wrapper and bash/zsh wrapper that call the same backend contract as Clink.
 - Add input validation and safer file-path handling for local file context injection.
 - Add support for more provider-specific endpoints beyond OpenAI-compatible ones.
