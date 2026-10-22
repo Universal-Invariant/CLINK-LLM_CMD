@@ -101,7 +101,35 @@ local function record_shell_output(raw)
     append_terminal_log(entry)
 end
 
-local function get_history_text()
+local function terminal_transcript(limit)
+    limit = tonumber(limit) or 200
+    if limit <= 0 then
+        return ""
+    end
+
+    local console_obj = console
+    if console_obj and type(console_obj.getnumlines) == "function" then
+        local total = console_obj.getnumlines()
+        if total and total > 0 then
+            local first = math.max(1, total - limit + 1)
+            local lines = {}
+            for i = first, total do
+                local line = console_obj.getlinetext(i)
+                if line and trim(line) ~= "" and not is_prompt_like(line) then
+                    table.insert(lines, trim(line))
+                end
+            end
+            if #lines > 0 then
+                return table.concat(lines, "\n")
+            end
+        end
+    end
+
+    return ""
+end
+
+local function get_history_text(limit)
+    limit = tonumber(limit) or 20
     local candidates = {
         os.getenv("CLINK_HISTORY_FILE"),
         os.getenv("CLINK_PROFILE") and (os.getenv("CLINK_PROFILE") .. "\\clink_history"),
@@ -122,7 +150,7 @@ local function get_history_text()
                 end
                 f:close()
 
-                local start_index = math.max(1, #lines - 25)
+                local start_index = math.max(1, #lines - limit + 1)
                 local selected = {}
                 for i = start_index, #lines do
                     table.insert(selected, lines[i])
@@ -164,7 +192,7 @@ local function command_mode_for(prompt)
     return "chat"
 end
 
-local function save_job(prompt, files, history, mode)
+local function save_job(prompt, files, history, terminal, mode)
     local appdata = os.getenv("LOCALAPPDATA") or os.getenv("USERPROFILE") or "."
     local dir = appdata .. "\\clink-llm"
     ensure_dir(dir)
@@ -180,6 +208,7 @@ local function save_job(prompt, files, history, mode)
         f:write("  \"prompt\": \"" .. json_escape(prompt) .. "\",\n")
         f:write("  \"cwd\": \"" .. json_escape(os.getenv("CD") or os.getenv("PWD") or ".") .. "\",\n")
         f:write("  \"history\": \"" .. json_escape(history or "") .. "\",\n")
+        f:write("  \"terminal\": \"" .. json_escape(terminal or "") .. "\",\n")
         f:write("  \"session_file\": \"" .. json_escape(session_file) .. "\",\n")
         f:write("  \"files\": ")
         write_json_array(f, files or {})
@@ -195,7 +224,8 @@ end
 
 local function queue_ai_request(prompt, files, history, mode)
     local mode_value = mode or "chat"
-    local jobfile = save_job(prompt, files, history, mode_value)
+    local terminal_text = terminal_transcript(200)
+    local jobfile = save_job(prompt, files, history, terminal_text, mode_value)
 
     if mode_value == "reset" then
         local command = string.format('python "%s" --job "%s" --reset-session', bridge, jobfile)
@@ -257,6 +287,7 @@ local function on_filter_input(line)
         print("  " .. prefix .. " $dir$")
         print("  " .. prefix .. " $history$")
         print("  " .. prefix .. " $terminal$")
+        print("  " .. prefix .. " $terminal:200$")
         print("  " .. prefix .. " $(git status)")
         print("  " .. prefix .. " @(registered_python_function(args))")
         print("  " .. prefix .. " >cmd find text files")
@@ -268,25 +299,25 @@ local function on_filter_input(line)
 
     if mode == "reset" then
         local files = {}
-        local history = get_history_text()
+        local history = get_history_text(20)
         return queue_ai_request("reset", files, history, "reset")
     end
 
     if mode == "debug" then
         local files = {}
-        local history = get_history_text()
+        local history = get_history_text(20)
         return queue_ai_request("debug", files, history, "debug")
     end
 
     if mode == "cmd" then
         local command_text = trim(prompt:sub(5))
         local files = extract_file_refs(command_text)
-        local history = get_history_text()
+        local history = get_history_text(20)
         return queue_ai_request(command_text, files, history, "cmd")
     end
 
     local files = extract_file_refs(prompt)
-    local history = get_history_text()
+    local history = get_history_text(20)
     return queue_ai_request(prompt, files, history, "chat")
 end
 
