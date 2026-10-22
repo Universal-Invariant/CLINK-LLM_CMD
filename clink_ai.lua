@@ -99,7 +99,24 @@ local function extract_file_refs(text)
     return refs
 end
 
-local function save_job(prompt, files, history)
+local function command_mode_for(prompt)
+    local s = trim(prompt)
+    if s:lower() == "help" then
+        return "help"
+    end
+    if s:lower() == "reset" then
+        return "reset"
+    end
+    if s:lower() == "debug" then
+        return "debug"
+    end
+    if s:lower():sub(1, 4) == "cmd " then
+        return "cmd"
+    end
+    return "chat"
+end
+
+local function save_job(prompt, files, history, mode)
     local appdata = os.getenv("LOCALAPPDATA") or os.getenv("USERPROFILE") or "."
     local dir = appdata .. "\\clink-llm"
     ensure_dir(dir)
@@ -119,6 +136,7 @@ local function save_job(prompt, files, history)
         f:write("  \"files\": ")
         write_json_array(f, files or {})
         f:write(",\n")
+        f:write("  \"mode\": \"" .. json_escape(mode or "chat") .. "\",\n")
         f:write("  \"prefix\": \"" .. json_escape(prefix) .. "\"\n")
         f:write("}\n")
         f:close()
@@ -127,8 +145,24 @@ local function save_job(prompt, files, history)
     return path
 end
 
-local function queue_ai_request(prompt, files, history)
-    local jobfile = save_job(prompt, files, history)
+local function queue_ai_request(prompt, files, history, mode)
+    local mode_value = mode or "chat"
+    local jobfile = save_job(prompt, files, history, mode_value)
+
+    if mode_value == "reset" then
+        local command = string.format('python "%s" --job "%s" --reset-session', bridge, jobfile)
+        os.execute(command)
+        print("[AI] session reset")
+        return ""
+    end
+
+    if mode_value == "debug" then
+        local command = string.format('python "%s" --job "%s" --debug', bridge, jobfile)
+        os.execute(command)
+        print("[AI] debug info")
+        return ""
+    end
+
     local command = string.format(
         'python "%s" --job "%s"',
         bridge,
@@ -165,18 +199,43 @@ local function on_filter_input(line)
         return ""
     end
 
-    if prompt:lower() == "help" then
+    local mode = command_mode_for(prompt)
+    if mode == "help" then
         print("AI prefix usage:")
         print("  " .. prefix .. " summarize this folder")
         print("  " .. prefix .. " explain build errors")
         print("  " .. prefix .. " what did I run last?")
         print("  " .. prefix .. " summarize !README.md!")
+        print("  " .. prefix .. " $dir$")
+        print("  " .. prefix .. " $(git status)")
+        print("  " .. prefix .. " >cmd find text files")
+        print("  " .. prefix .. " >reset")
+        print("  " .. prefix .. " >debug")
         return ""
+    end
+
+    if mode == "reset" then
+        local files = {}
+        local history = get_history_text()
+        return queue_ai_request("reset", files, history, "reset")
+    end
+
+    if mode == "debug" then
+        local files = {}
+        local history = get_history_text()
+        return queue_ai_request("debug", files, history, "debug")
+    end
+
+    if mode == "cmd" then
+        local command_text = trim(prompt:sub(5))
+        local files = extract_file_refs(command_text)
+        local history = get_history_text()
+        return queue_ai_request(command_text, files, history, "cmd")
     end
 
     local files = extract_file_refs(prompt)
     local history = get_history_text()
-    return queue_ai_request(prompt, files, history)
+    return queue_ai_request(prompt, files, history, "chat")
 end
 
 clink.onfilterinput(on_filter_input)
