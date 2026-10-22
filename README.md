@@ -2,12 +2,12 @@
 
 A lightweight Clink frontend for routing inline command prompts to an LLM backend.
 
-The shell-side hook intercepts lines beginning with a configurable prefix (default: `>`), captures useful context (cwd, recent history, and `!file.txt!` references), and prevents the original raw line from being executed by `cmd.exe`. It then hands the job off to a Python helper that calls an OpenAI-compatible or provider-specific endpoint.
+The shell-side hook intercepts lines beginning with a configurable prefix (default: `>`), captures useful context (cwd, recent history, file refs, and shell state), and prevents the original raw line from being executed by `cmd.exe`. It then hands the job off to a Python helper that calls an OpenAI-compatible or provider-specific endpoint.
 
 Files in this repo:
 
 - `clink_ai.lua` — Clink Lua plugin
-- `ai_bridge.py` — reusable Python backend that calls an LLM API and can also be invoked directly from PowerShell, bash, or other scripts
+- `ai_bridge.py` — Python backend used by Clink and other terminals
 - `clink_start.cmd` — minimal startup script
 
 ## Install the plugin in Clink
@@ -24,7 +24,7 @@ Files in this repo:
 
 2. Put `ai_bridge.py` alongside the script, or set `CLINK_AI_BRIDGE` to its actual path.
 
-   For example:
+   Example:
 
    ```cmd
    set CLINK_AI_BRIDGE=C:\tools\clink-llm\ai_bridge.py
@@ -37,10 +37,11 @@ Files in this repo:
 5. Try prompts such as:
 
    ```cmd
-   > summarize the current folder
-   > explain build errors
-   > what did I run last?
+   > summarize this folder $dir$
+   > explain build errors $terminal$
+   > what did I run last? $history$
    > summarize !README.md!
+   > what should I do with $(git status)
    ```
 
 ## Special prompt commands and macros
@@ -49,49 +50,88 @@ The plugin supports a few special prompt forms for making the AI context-aware a
 
 ### Built-in commands
 
-These are not normal shell commands; they are recognized by the assistant front-end and handled specially.
+These are not normal shell commands; they are recognized by the front-end and handled specially.
 
 - `>help` — show AI usage examples
 - `>reset` — reset the current conversation session
 - `>debug` — print the current provider/model/session state
-- `>cmd <command>` — request a shell command suggestion instead of a narrative answer
+- `>cmd <command>` — request a shell command suggestion instead of a general answer
+- `>help:clink:keys ...` — future help namespace pattern for terminal knowledge lookup
 
 Example:
 
 ```cmd
+>help
 >cmd find text files in this folder
 >debug
 >reset
+>help:clink:keys What command lists recent directory output?
 ```
 
-### Inline command execution tokens
+### Prompt macros and built-in shell context
 
-You can inject the output of shell commands directly into the prompt. This is useful for asking the assistant to interpret actual local command output.
+These are the main prompt macro forms we use to inject real shell context into the model prompt.
 
-Supported forms:
-
-- `$dir$` → runs `dir` and inserts its output
-- `$(git status)` → runs the command and inserts the captured output
-- `$(dir /b)` → runs a command and inserts the captured output
-- `>|` or `|>` style shell piping is supported conceptually for chaining a capture into a downstream command or prompt context
+- `$dir$` — current directory listing (`dir`)
+- `$history$` — recent command history
+- `$terminal$` — recent terminal/build output or captured console context
+- `$git$` or `$gitstatus$` — `git status --short --branch`
+- `$cwd$` or `$pwd$` — current working directory
+- `$last$` or `$lastcmd$` — most recent command from the environment if available
+- `$(git status)` — explicitly run a command and insert its output into the prompt
+- `$(git log --oneline -5)` — run an arbitrary command and capture its output
+- `!file.txt!` — include a file in the prompt context
+- `@(registered_python_function(args))` — custom injector hook for a Python function registered by the user
 
 Examples:
 
 ```cmd
->Summarize the content of this $dir$
->What should I do next based on $(git status)
->Explain the recent repo state from $(git log --oneline -5)
->Inspect this directory and tell me what stands out: $dir$
+> summarize the contents of the current folder $dir$
+> explain build errors in this terminal $terminal$
+> what did I run last? $history$
+> summarize !README.md!
+> what do I need to do next based on $(git status)
+> which command lists recent directory output? help:clink:keys
+> @(my_injector("Z:\"))
 ```
 
-The command output is trimmed to a safe size before being sent to the model so long shell output does not blow up the prompt.
+The shell output is trimmed to a safe size before being sent to the model so long command output does not blow up the prompt.
 
-### Prompt conventions
+### Custom injectors
 
-- `>` = general terminal assistant / conversational mode
-- `>cmd ...` = ask for a command suggestion instead of a general answer
-- `!file.txt!` = include that local file in the prompt context
-- `$cmd$` and `$(cmd)` = inline command execution and output capture
+The system is designed to stay generic and not just Clink-specific. A user can register custom Python injectors that return text to be embedded into the prompt. The syntax is:
+
+```text
+@(registered_python_function(args))
+```
+
+This is resolved by a Python registry in `ai_bridge.py`.
+
+For example, a user can register a Python function like this:
+
+```python
+from ai_bridge import register_injector
+
+
+def my_injector(args_text="", **kwargs):
+    return "some extracted context"
+
+
+register_injector("my_injector", my_injector)
+```
+
+The injector can also be loaded from a custom Python file via the environment variable:
+
+```cmd
+set CLINK_AI_INJECTOR_PATHS=C:\path\to\my_injectors.py
+```
+
+The module may define either:
+
+- `INJECTORS = { "my_injector": my_injector }`
+- or `injectors = { "my_injector": my_injector }`
+
+This allows the prompt layer to stay generic while users add domain-specific tools for their own environment.
 
 ## Configuration
 
@@ -153,12 +193,12 @@ The path is not forced to one exact shape. The backend uses the provider source 
 
 ## Why the bridge is Python
 
-Clink itself must be Lua because it is a Lua-hosted shell extension. The AI bridge does not have to be Lua; Python is a better fit for HTTP, JSON, file context, session state, command-output capture, and provider normalization.
+Clink itself must be Lua because it is a Lua-hosted shell extension. The AI bridge does not have to be Lua; Python is a better fit for HTTP, JSON, file context, session state, command-output capture, shell macros, and provider normalization.
 
-The pattern is intentionally split:
+The pattern is deliberately split:
 
 - `clink_ai.lua` handles shell interception and route selection.
-- `ai_bridge.py` handles model calls, file context, command-output injection, provider normalization, and bounded session memory.
+- `ai_bridge.py` handles model calls, shell context injection, prompt macro expansion, custom injectors, provider normalization, and bounded session memory.
 
 This keeps the shell hook thin while making the model layer easier to reuse from PowerShell, bash, or other scripts.
 
@@ -170,30 +210,44 @@ This prevents the assistant from forgetting the previous exchange and keeps the 
 
 The bridge is designed for terminal usage, so the system prompt emphasizes short, actionable output and continued terminal context.
 
-## Backend reuse across shells
+## Generic design goal
 
-The backend is intentionally separate from the Clink hook. The same helper can be reused from other wrappers.
+This plugin is intentionally generic enough to be useful outside of Clink. The same backend logic can be reused from:
 
-Examples:
+- Clink
+- PowerShell
+- bash and zsh
+- other terminal wrappers or custom assistants
+
+The generic contract is:
+
+- the front-end intercepts user input
+- the backend expands macros and injectors
+- the backend sends a prompt to an LLM provider
+- the terminal frontend displays a concise answer
+
+This keeps the project useful even if the shell host changes.
+
+## Example terminal workflows
 
 ```cmd
-python ai_bridge.py --prompt "summarize this folder" --cwd "%CD%" --files README.md --history "dir"
+> summarize the current folder $dir$
+> explain errors in this build log $terminal$
+> what should I do now based on $(git status)
+> summarize !README.md!
+>cmd find large files in this folder
+>help:clink:keys Show recent directory output.
 ```
-
-```bash
-python ai_bridge.py --prompt "summarize this folder" --cwd "$PWD" --files README.md --history "pwd\nls"
-```
-
-A PowerShell wrapper would call the same script with similar arguments. The shell-specific piece is just the front-end trigger; the actual model call stays in one reusable place.
 
 ## Future enhancements
 
 Planned follow-up improvements for this project:
 
+- Add a real help directory / RAG layer for terminal commands and manuals.
+- Add a namespace system like `help:clink:keys`, `help:git:status`, and `help:python:venv`.
 - Add richer prompt redrawing and more reliable prompt restoration after AI output.
-- Add confirm/continue semantics for follow-up responses like `y`, `yes`, `no`, and `continue`.
-- Add explicit chat vs command-suggestion modes (`> ...` versus `>cmd ...`).
-- Add command-output capture for more shell pipelines and richer prompt macros.
+- Add explicit confirm/continue semantics for follow-up responses like `y`, `yes`, `no`, and `continue`.
+- Add command-output capture for additional shell pipelines and richer prompt macros.
 - Include current git status, recent directory listing, environment summary, and selected file metadata.
 - Add a reset/debug/help mode for session management.
 - Add a PowerShell wrapper and bash/zsh wrapper that call the same backend contract as Clink.
@@ -202,6 +256,7 @@ Planned follow-up improvements for this project:
 - Add result caching and a lightweight request log for repeat prompts.
 - Add a non-blocking queue directory and worker model for cleaner asynchronous output.
 - Add a simple plugin configuration file for default prefix, model, and backend settings.
+- Add a general-purpose help corpus so the assistant can answer things like “What command lists the recent directory output?” without the user needing to know the exact command.
 
 ## License
 
