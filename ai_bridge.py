@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from urllib import error, request
 
@@ -169,8 +170,52 @@ def trim_session_messages(messages):
     return trimmed
 
 
+def expand_prompt_macros(text, cwd=None, limit=20000):
+    if not text:
+        return text
+
+    cwd = cwd or os.getcwd()
+    alias_map = {
+        "dir": "dir",
+        "cwd": "cd",
+        "pwd": "cd",
+        "path": "cd",
+    }
+
+    def replace_match(match):
+        inner = match.group(1) if match.group(1) is not None else match.group(2)
+        command = inner.strip()
+        if not command:
+            return ""
+
+        command = command.replace("|>", "|")
+        lowered = command.strip().lower()
+        if lowered in alias_map:
+            command = alias_map[lowered]
+
+        try:
+            proc = subprocess.run(
+                command,
+                shell=True,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            output = (proc.stdout or "") + ("\n" + (proc.stderr or "") if proc.stderr else "")
+            output = output.strip()
+            if not output:
+                return "[command produced no output]"
+            return output[:limit]
+        except Exception as exc:
+            return f"[command failed: {exc}]"
+
+    expanded = re.sub(r"\$\((.*?)\)|\$([^$\n]+?)\$", replace_match, text)
+    return expanded
+
+
 def build_user_message(job):
-    prompt = job.get("prompt", "")
+    prompt = expand_prompt_macros(job.get("prompt", ""), cwd=job.get("cwd", "") or os.getcwd())
     cwd = job.get("cwd", "")
     history = job.get("history", "")
     files = job.get("files", [])
@@ -206,13 +251,14 @@ def build_prompt_from_args(args):
 
     file_section = "\n".join(file_snippets)
     history_section = f"\nRecent command history:\n{args.history}\n" if args.history else ""
+    prompt = expand_prompt_macros(args.prompt or "", cwd=args.cwd or os.getcwd())
 
     return (
         "You are a helpful terminal assistant.\n"
         f"Current directory: {args.cwd or os.getcwd()}\n"
         f"{history_section}"
         f"{file_section}\n"
-        f"User request: {args.prompt or ''}\n"
+        f"User request: {prompt}\n"
     )
 
 
@@ -223,7 +269,7 @@ def call_provider(prompt, api_url=None, model=None, api_key=None, prior_messages
 
     messages = [{
         "role": "system",
-        "content": "You are a helpful terminal assistant for the Windows command line. Use prior conversation context when present. Keep replies brief, actionable, and shell-aware."
+        "content": "You are a helpful terminal assistant for the Windows command line. Use prior conversation context when present. Keep replies brief, actionable, shell-aware, and command-oriented."
     }]
 
     if prior_messages:
