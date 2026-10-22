@@ -24,6 +24,7 @@ end
 
 local bridge = os.getenv("CLINK_AI_BRIDGE") or default_bridge_path()
 local session_file = os.getenv("CLINK_AI_SESSION_FILE") or (os.getenv("LOCALAPPDATA") or os.getenv("USERPROFILE") or ".") .. "\\clink-llm\\chat_session.json"
+local terminal_log = os.getenv("CLINK_AI_TERMINAL_LOG") or (os.getenv("LOCALAPPDATA") or os.getenv("USERPROFILE") or ".") .. "\\clink-llm\\terminal_log.txt"
 
 local function trim(s)
     if s == nil then return "" end
@@ -58,6 +59,48 @@ local function ensure_dir(path)
     return ok
 end
 
+local function is_prompt_like(text)
+    local s = trim(text or "")
+    if s == "" then
+        return false
+    end
+    if s:sub(1, 1) == ">" then
+        return true
+    end
+    if s:find("$terminal$") or s:find("$history$") or s:find("$dir$") or s:find("$(") or s:find("@(") then
+        return true
+    end
+    return false
+end
+
+local function append_terminal_log(entry)
+    if not entry or entry == "" then
+        return
+    end
+    if is_prompt_like(entry) then
+        return
+    end
+
+    local dir = terminal_log:match("^(.*)[\\/][^\\/]+$") or "."
+    ensure_dir(dir)
+    local f = io.open(terminal_log, "a")
+    if f then
+        f:write(entry .. "\n")
+        f:close()
+    end
+end
+
+local function record_shell_output(raw)
+    local entry = trim(raw or "")
+    if entry == "" then
+        return
+    end
+    if is_prompt_like(entry) then
+        return
+    end
+    append_terminal_log(entry)
+end
+
 local function get_history_text()
     local candidates = {
         os.getenv("CLINK_HISTORY_FILE"),
@@ -72,7 +115,10 @@ local function get_history_text()
             if f then
                 local lines = {}
                 for line in f:lines() do
-                    table.insert(lines, line)
+                    local clean = trim(line)
+                    if clean ~= "" and not is_prompt_like(clean) then
+                        table.insert(lines, clean)
+                    end
                 end
                 f:close()
 
@@ -216,7 +262,7 @@ local function on_filter_input(line)
         print("  " .. prefix .. " >cmd find text files")
         print("  " .. prefix .. " >reset")
         print("  " .. prefix .. " >debug")
-        print("  " .. prefix .. "help:clink:keys  What command lists recent directory output?")
+        print("  " .. prefix .. "help:clink:keys What command lists recent directory output?")
         return ""
     end
 
