@@ -4,6 +4,7 @@
 -- This module is safe to require from Clink.
 
 local CJSON = nil
+local M = {}
 
 local function get_cjson()
 	if CJSON then
@@ -174,7 +175,11 @@ local function resolve_api_url(explicit_url)
 				return v .. "/api/chat"
 			end
 
-			if lower:find("lmstudio", 1, true) or lower:find("localhost:1234", 1, true) or lower:find("localhost:12349", 1, true) then
+			if
+				lower:find("lmstudio", 1, true)
+				or lower:find("localhost:1234", 1, true)
+				or lower:find("localhost:12349", 1, true)
+			then
 				if lower:find("/v1/chat/completions", 1, true) then
 					return v
 				end
